@@ -1,0 +1,257 @@
+---
+output:
+  md_document:
+    variant: markdown_github
+---
+
+# Purpose: 20784538 Data Science Project
+
+The purpose of this README is to provide the breakdown of the project. 
+
+The project focuses on a dataset for the titanic ship that sunk, and contains data for the passengers, including sex, passenger class, whether they had siblings, whether they survived or not and ticket prices ecetera. The aim is to train a model to predict whether the passenger would survive or not given the variables in the dataset. 
+
+The dataset was retrieved off Kaggle. 
+
+```{r}
+
+rm(list = ls()) # Clean your environment:
+gc() # garbage collection - It can be useful to call gc after a large object has been removed, as this may prompt R to return memory to the operating system.
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(dplyr, ggplot2, rsample, caret, glmnet, vip, tidyverse, pdp, rpart, doParallel, foreach, ipred, ranger, gbm, xgboost, randomForest)
+
+list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+
+```
+
+## Loading the data
+
+```{r}
+
+titanic_data <- read.csv("C:/Users/mishq/OneDrive/Documents/Ro-eagan/Data Science for Econometrics S1/Data-Science-Project/Project/data/train.csv")
+
+```
+
+## Split data into train and test
+```{r}
+
+set.seed(123)
+split <- initial_split(titanic_data, prop = 0.7, strata = "Survived", na.rm = T)
+titanic_train <- training(split)
+titanic_test <- testing(split)
+
+titanic_train <- na.omit(titanic_train)
+
+```
+
+
+```{r, cache=F, message=F}
+
+model1 <- lm(PassengerId ~ Embarked, data = titanic_train) 
+
+```
+
+
+```{r, cache=F, message=F, echo=F, fig.retina = 2, fig.width = 10, fig.height = 8, fig.align = 'center'}
+
+# p1 <- model1 %>%
+  # broom::augment() %>%
+  # ggplot() + 
+  # geom_bar(aes(Survived, Pclass, fill = Survived), stat = "identity", alpha = 0.3) +
+  # geom_smooth(se = FALSE, method = "lm") +
+  # ggtitle("Fitted regression line")
+
+# p1
+
+summary(model1)
+
+```
+
+```{r, rand_forest, cache=F, message=F, echo=F}
+
+y <- titanic_train$Survived
+
+features <- c("Pclass", "Sex", "Fare")
+
+X <- model.matrix(~ ., data = titanic_train[, features])
+X_test <- model.matrix(~ ., data = titanic_test[, features])
+
+model <- randomForest::randomForest(x = X, y = y, ntree = 100, mtry = 3, maxdepth = 5, importance = TRUE, seed = 1) 
+prediction <- predict(model, X_test)
+
+output <- data.frame(PassengerId = titanic_test$PassengerId, Survived = prediction)
+output %>% mutate(Survived = ifelse(Survived >= 0.5, 1, 0))
+
+titanic_test <- titanic_test %>% select(-Survived)
+                  
+write.csv(output, file = "Survived.csv", row.names = FALSE)
+
+output
+```
+
+```{r}
+
+ridge <- cv.glmnet(
+    x = X,
+    y = y,
+    alpha = 0)
+
+lasso <- cv.glmnet(
+    x = X,
+    y = y, 
+    alpha = 1)
+
+```
+
+Plot the results: 
+
+```{r, tuning, cache=F, message=F, echo=F, fig.align = 'center'}
+
+par(mfrow = c(1, 2))
+plot(ridge, main = "Ridge penalty\n\n")
+plot(lasso, main = "Lasso penalty\n\n")
+
+```
+
+```{r}
+
+# Ridge model
+min(ridge$cvm)       # minimum MSE
+ridge$lambda.min     # lambda for this min MSE
+
+# Lasso model
+min(lasso$cvm)       # minimum MSE
+lasso$lambda.min     # lambda for this min MSE
+
+lasso$nzero[lasso$lambda == lasso$lambda.min]
+
+```
+
+```{r , ridge_lasso, cache=F, message=F, echo=F, fig.retina = 2, fig.width = 10, fig.height = 8, fig.align = 'center'}
+
+ridge_min <- glmnet(
+  x = X,
+  y = y,
+  alpha = 0
+)
+
+# Lasso model
+lasso_min <- glmnet(
+  x = X,
+  y = y,
+  alpha = 1
+)
+
+par(mfrow = c(1, 2))
+# plot ridge model
+plot(ridge_min, xvar = "lambda", main = "Ridge penalty\n\n")
+abline(v = log(ridge$lambda.min), col = "red", lty = "dashed")
+abline(v = log(ridge$lambda.1se), col = "blue", lty = "dashed")
+
+# plot lasso model
+plot(lasso_min, xvar = "lambda", main = "Lasso penalty\n\n")
+abline(v = log(lasso$lambda.min), col = "red", lty = "dashed")
+abline(v = log(lasso$lambda.1se), col = "blue", lty = "dashed")
+
+```
+
+```{r}
+
+set.seed(123)
+cv_glmnet <- train(
+  x = X,
+  y = y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+
+cv_glmnet$bestTune
+
+cv_glmnet$results %>%
+  filter(alpha == cv_glmnet$bestTune$alpha, lambda == cv_glmnet$bestTune$lambda)
+
+pred <- predict(cv_glmnet, X)
+
+RMSE(exp(pred), exp(y))
+
+```
+
+```{r, , vip, cache=F, message=F, echo=F, fig.retina = 2, fig.width = 10, fig.height = 8, fig.align = 'center'}
+
+vip(cv_glmnet, num_features = 20, geom = "point")
+
+```
+
+```{r}
+
+titanic_train1 <- rpart(
+    formula = PassengerId ~ ., 
+    data = titanic_train,
+    method = "anova"
+)
+
+titanic_train1
+
+titanic_train2 <- train(
+    PassengerId ~ .,
+  data = titanic_train,
+  method = "rpart",
+  trControl = trainControl(method = "cv", number = 30),
+  tuneLength = 20
+)
+
+titanic_train2
+
+```
+
+```{r , regression_1, cache=F, message=F, echo=F, fig.retina = 2, fig.width = 10, fig.height = 8, fig.align = 'center'}
+
+ggplot(titanic_train2)
+
+```
+
+```{r}
+
+# titanic_bag <- bagging(
+#     formula = PassengerId ~ ., 
+#     data = titanic_train,
+#     nbagg = 100,
+#     coob = TRUE,
+#     control = rpart.control(minsplit = 2, cp = 0)
+# )
+# 
+# titanic_bag 
+
+```
+
+```{r}
+
+ntree <- seq(1, 200, by = 200)
+rmse <- vector(mode = "numeric", length = length(ntree))
+
+for (i in seq_along(ntree)) {
+set.seed(123)
+model2 <- ranger::ranger(
+    formula = PassengerId ~ ., 
+    data = titanic_train,
+    num.trees = ntree[i],
+    mtry = ncol(titanic_train) - 1, 
+    min.node.size = 1
+)
+
+rmse[i] <- sqrt(model2$prediction.error)
+}
+
+bagging_errors <- data.frame(ntree, rmse)
+
+ggplot(bagging_errors, aes(ntree, rmse)) +
+  geom_line() +
+  geom_hline(yintercept = 41019, lty = "dashed", color = "grey50") +
+  annotate("text", x = 100, y = 41385, label = "Best individual pruned tree", vjust = 0, hjust = 0, color = "grey50") +
+  annotate("text", x = 100, y = 26750, label = "Bagged trees", vjust = 0, hjust = 0) +
+  ylab("RMSE") +
+  xlab("Number of trees")
+
+```
+
